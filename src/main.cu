@@ -41,7 +41,7 @@ int main() {
 
     cudaMemcpy(h_image, d_image, img_size, cudaMemcpyDeviceToHost);
 
-    std::cout << "Watermarked sample pixel [0]: " << (int)h_image[0] << std::endl;
+    std::cout << "✅ Watermarked sample pixel [0]: " << (int)h_image[0] << std::endl;
 
     cudaFree(d_image);
     cudaFree(d_watermark);
