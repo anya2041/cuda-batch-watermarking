@@ -1,52 +1,72 @@
-// File: src/main.cu
 #include <iostream>
+#include <fstream>
 #include <cuda_runtime.h>
-#include "../include/watermark.h"
+#include <device_launch_parameters.h>
 
-#define IMG_WIDTH 512
-#define IMG_HEIGHT 512
+#define WIDTH 256
+#define HEIGHT 256
+#define IMAGE_SIZE (WIDTH * HEIGHT)
 
-__global__ void apply_watermark(unsigned char *image, unsigned char *watermark, int width, int height) {
+// CUDA Kernel: Embed watermark (simple brightness adjustment)
+__global__ void watermarkKernel(unsigned char* image, int width, int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x < width && y < height) {
         int idx = y * width + x;
-        image[idx] = (image[idx] >> 1) + (watermark[idx] >> 1); // blend
+        image[idx] = min(255, image[idx] + 50);  // simple brightening watermark
     }
 }
 
-int main() {
-    int img_size = IMG_WIDTH * IMG_HEIGHT;
+// Read PGM image (P5 format)
+unsigned char* loadPGM(const std::string& filename, int* width, int* height) {
+    std::ifstream ifs(filename, std::ios::binary);
+    std::string header;
+    int maxval;
 
-    unsigned char *h_image = new unsigned char[img_size];
-    unsigned char *h_watermark = new unsigned char[img_size];
-
-    for (int i = 0; i < img_size; ++i) {
-        h_image[i] = 100;       // simulate input image
-        h_watermark[i] = 50;    // simulate watermark
+    ifs >> header;
+    if (header != "P5") {
+        std::cerr << "Unsupported format. Use P5." << std::endl;
+        exit(1);
     }
 
-    unsigned char *d_image, *d_watermark;
-    cudaMalloc(&d_image, img_size);
-    cudaMalloc(&d_watermark, img_size);
+    ifs >> *width >> *height >> maxval;
+    ifs.ignore(); // consume newline
 
-    cudaMemcpy(d_image, h_image, img_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_watermark, h_watermark, img_size, cudaMemcpyHostToDevice);
+    unsigned char* data = new unsigned char[(*width) * (*height)];
+    ifs.read(reinterpret_cast<char*>(data), (*width) * (*height));
+    ifs.close();
+    return data;
+}
 
-    dim3 threadsPerBlock(16, 16);
-    dim3 numBlocks((IMG_WIDTH + 15) / 16, (IMG_HEIGHT + 15) / 16);
+// Save PGM image
+void savePGM(const std::string& filename, const unsigned char* data, int width, int height) {
+    std::ofstream ofs(filename, std::ios::binary);
+    ofs << "P5\n" << width << " " << height << "\n255\n";
+    ofs.write(reinterpret_cast<const char*>(data), width * height);
+    ofs.close();
+}
 
-    apply_watermark<<<numBlocks, threadsPerBlock>>>(d_image, d_watermark, IMG_WIDTH, IMG_HEIGHT);
+int main() {
+    int width, height;
+    unsigned char* h_image = loadPGM("watermark.pgm", &width, &height);
 
-    cudaMemcpy(h_image, d_image, img_size, cudaMemcpyDeviceToHost);
+    unsigned char* d_image;
+    cudaMalloc(&d_image, width * height);
+    cudaMemcpy(d_image, h_image, width * height, cudaMemcpyHostToDevice);
 
-    std::cout << "✅ Watermarked sample pixel [0]: " << (int)h_image[0] << std::endl;
+    dim3 blockDim(16, 16);
+    dim3 gridDim((width + 15) / 16, (height + 15) / 16);
+
+    watermarkKernel<<<gridDim, blockDim>>>(d_image, width, height);
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_image, d_image, width * height, cudaMemcpyDeviceToHost);
+    savePGM("output/watermarked.pgm", h_image, width, height);
+
+    std::cout << "\x1B[32m\x1B[1mWatermarked sample pixel [0]: " << (int)h_image[0] << "\x1B[0m" << std::endl;
 
     cudaFree(d_image);
-    cudaFree(d_watermark);
     delete[] h_image;
-    delete[] h_watermark;
-
     return 0;
 }

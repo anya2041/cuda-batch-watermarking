@@ -1,16 +1,16 @@
 @echo off
-echo ≡⚙️ Compiling CUDA project...
+echo ≡🔥 Compiling CUDA project...
+nvcc -o watermark.out src\main.cu
 
-nvcc src\main.cu -o watermark.out -Iinclude -Xcompiler "/EHsc" -allow-unsupported-compiler
-
-if %errorlevel% neq 0 (
-    echo ❌ Compilation failed.
+IF ERRORLEVEL 1 (
+    echo ⚠️ Compilation failed.
     pause
-    exit /b %errorlevel%
+    exit /b
 )
 
-echo ▶ Running project...
+echo 🚀 Running project...
 watermark.out
 
 echo ✅ Done.
+start output\watermarked.pgm
 pause

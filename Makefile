@@ -1,27 +1,11 @@
-# Makefile for CUDA Batch Watermarking
-PROJECT_NAME = watermark
-SRC_DIR = src
-INCLUDE_DIR = include
+TARGET = watermark.out
+SRC = src/main.cu
 
-NVCC = nvcc
-CFLAGS = -I$(INCLUDE_DIR) -allow-unsupported-compiler
+$(TARGET): $(SRC)
+	nvcc -o $(TARGET) $(SRC)
 
-SRC = $(SRC_DIR)/main.cu
-OUT = $(PROJECT_NAME).exe
-
-all: build
-
-build:
-	$(NVCC) $(CFLAGS) -o $(OUT) $(SRC)
-
-run: build
-	./$(OUT)
+run: $(TARGET)
+	./$(TARGET)
 
 clean:
-	rm -f $(OUT)
-
-
-#HOW TO USE THIS
-# make           # compiles
-# make run       # compiles + runs
-# make clean     # deletes the executable
+	rm -f $(TARGET)
