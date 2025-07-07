@@ -2,8 +2,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>  
 #include <string>
 #include <vector>
+
 
 #define CHECK_CUDA(call)                                              \
     do {                                                              \
