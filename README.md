@@ -91,11 +91,11 @@ pause
 
 
 # 5. include/
-# Any custom headers go here. Example: include/watermarking.h (optional)
+Any custom headers go here. Example: include/watermarking.h (optional)
 
 
 # 6. input/
-# Place 5-10 grayscale images (e.g. `.pgm`) here for testing
+Place 5-10 grayscale images (e.g. `.pgm`) here for testing
 
 
 # 7. output/
