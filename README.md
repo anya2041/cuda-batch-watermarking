@@ -87,26 +87,25 @@ pause
 
 
 # 4. src/main.cu (CUDA C++ logic for watermarking)
-# You already have this file — if not, I will generate it separately.
+
 
 
 # 5. include/
-# Any custom headers go here. Example: include/watermarking.h (optional)
+Any custom headers go here. Example: include/watermarking.h (optional)
 
 
 # 6. input/
-# Place 5-10 grayscale images (e.g. `.pgm`) here for testing
+Place 5-10 grayscale images (e.g. `.pgm`) here for testing
 
 
 # 7. output/
-# Output watermarked images will appear here
+
 
 
 # 8. logs/
-# Logs printed during watermarking (optional, e.g. timestamps)
-
+Still in progress, havent added logs
 
 # 9. watermark.pgm
-# A small grayscale image you want to apply as watermark on top of all images
+
 
 
