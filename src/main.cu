@@ -1,122 +1,139 @@
-#include <iostream>
+#include <cuda_runtime.h>
+#include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <cuda_runtime.h>
 
-#define CHECK_CUDA(call) \
-    if ((call) != cudaSuccess) { \
-        std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ << std::endl; \
-        return 1; \
-    }
+#define CHECK_CUDA(call)                                              \
+    do {                                                              \
+        cudaError_t _e = (call);                                      \
+        if (_e != cudaSuccess) {                                      \
+            std::cerr << "CUDA error " << cudaGetErrorString(_e)      \
+                      << " at " << __FILE__ << ':' << __LINE__        \
+                      << std::endl;                                   \
+            std::exit(EXIT_FAILURE);                                  \
+        }                                                             \
+    } while (0)
 
-__global__ void apply_watermark(unsigned char* input, unsigned char* watermark, unsigned char* output,
-                                int width, int height, int wm_width, int wm_height) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+namespace fs = std::filesystem;
 
-    if (x >= width || y >= height) return;
-
-    int idx = y * width + x;
-    output[idx] = input[idx]; // default: copy original
-
-    if (x < wm_width && y < wm_height) {
-        int wm_idx = y * wm_width + x;
-
-        float blended = input[idx] + 0.4f * watermark[wm_idx];
-        output[idx] = (unsigned char)fminf(255.0f, blended);
-
-    // DEBUG mode: forcibly overwrite to white if strong watermark
-    // if (watermark[wm_idx] > 128) {
-    //     output[idx] = 255;
-    // }
-    }
-}
-
-bool loadPGM(const std::string& filename, std::vector<unsigned char>& data, int& width, int& height) {
+bool loadPGM_P2(const std::string &filename,
+                std::vector<unsigned char> &data,
+                int &w, int &h) {
     std::ifstream file(filename);
-    if (!file) return false;
+    if (!file.is_open()) return false;
 
     std::string line;
-    std::getline(file, line); // Expecting "P2"
+    std::getline(file, line); // "P2"
     if (line != "P2") return false;
 
-    // Skip comments
     do {
         std::getline(file, line);
     } while (line[0] == '#');
 
     std::istringstream dim(line);
-    dim >> width >> height;
+    dim >> w >> h;
 
     int maxval;
     file >> maxval;
 
-    data.resize(width * height);
-    for (int i = 0; i < width * height; ++i) {
+    data.resize(w * h);
+    for (int i = 0; i < w * h; ++i) {
         int pixel;
         file >> pixel;
         data[i] = static_cast<unsigned char>(pixel);
     }
-
     return true;
 }
 
-void savePGM(const std::string& filename, const std::vector<unsigned char>& data, int width, int height) {
-    std::ofstream file(filename);
-    file << "P2\n" << width << " " << height << "\n255\n";
-    for (int i = 0; i < width * height; ++i) {
-        file << static_cast<int>(data[i]) << " ";
-        if ((i + 1) % width == 0) file << "\n";
+bool savePGM_P2(const std::string &filename,
+                const std::vector<unsigned char> &data,
+                int w, int h) {
+    std::ofstream f(filename);
+    if (!f) return false;
+    f << "P2\n" << w << " " << h << "\n255\n";
+    for (int i = 0; i < w * h; ++i) {
+        f << static_cast<int>(data[i]) << " ";
+        if ((i + 1) % w == 0) f << "\n";
+    }
+    return true;
+}
+
+__global__ void apply_watermark(const unsigned char* input,
+                                unsigned char* output,
+                                const unsigned char* watermark,
+                                int img_w, int img_h,
+                                int wm_w, int wm_h,
+                                float alpha) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= img_w || y >= img_h) return;
+
+    int idx = y * img_w + x;
+    output[idx] = input[idx];
+
+    if (x < wm_w && y < wm_h) {
+        int wm_idx = y * wm_w + x;
+        float blend = (1.0f - alpha) * input[idx] + alpha * watermark[wm_idx];
+        output[idx] = static_cast<unsigned char>(fminf(255.0f, blend));
     }
 }
 
 int main() {
-    int img_w, img_h, wm_w, wm_h;
-    std::vector<unsigned char> input_host, watermark_host;
+    std::string input_dir = "input";
+    std::string output_dir = "output";
+    std::string watermark_file = "input/watermark.pgm";
 
-    // Load input image
-    if (!loadPGM("input/venus2.ascii.pgm", input_host, img_w, img_h)) {
-        std::cerr << "Failed to load input image\n";
+    int wm_w, wm_h;
+    std::vector<unsigned char> wm_host;
+    if (!loadPGM_P2(watermark_file, wm_host, wm_w, wm_h)) {
+        std::cerr << "Failed to load watermark.pgm\n";
         return 1;
     }
-    std::cout << "Loaded input image: " << img_w << " x " << img_h << "\n";
 
-    // Load watermark
-    if (!loadPGM("input/watermark.pgm", watermark_host, wm_w, wm_h)) {
-        std::cerr << "Failed to load watermark\n";
-        return 1;
+    size_t wm_size = wm_w * wm_h * sizeof(unsigned char);
+    unsigned char* d_wm;
+    CHECK_CUDA(cudaMalloc(&d_wm, wm_size));
+    CHECK_CUDA(cudaMemcpy(d_wm, wm_host.data(), wm_size, cudaMemcpyHostToDevice));
+
+    for (const auto& entry : fs::directory_iterator(input_dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".pgm") continue;
+
+        std::string in_path = entry.path().string();
+        std::string out_path = output_dir + "/" + entry.path().stem().string() + "_wm.pgm";
+
+        int img_w, img_h;
+        std::vector<unsigned char> img_host;
+        if (!loadPGM_P2(in_path, img_host, img_w, img_h)) {
+            std::cerr << "Failed to load image: " << in_path << "\n";
+            continue;
+        }
+
+        size_t img_size = img_w * img_h * sizeof(unsigned char);
+        unsigned char *d_in, *d_out;
+        CHECK_CUDA(cudaMalloc(&d_in, img_size));
+        CHECK_CUDA(cudaMalloc(&d_out, img_size));
+
+        CHECK_CUDA(cudaMemcpy(d_in, img_host.data(), img_size, cudaMemcpyHostToDevice));
+
+        dim3 threads(16, 16);
+        dim3 blocks((img_w + 15) / 16, (img_h + 15) / 16);
+
+        apply_watermark<<<blocks, threads>>>(
+            d_in, d_out, d_wm,
+            img_w, img_h, wm_w, wm_h, 0.4f);
+        CHECK_CUDA(cudaDeviceSynchronize());
+
+        CHECK_CUDA(cudaMemcpy(img_host.data(), d_out, img_size, cudaMemcpyDeviceToHost));
+        savePGM_P2(out_path, img_host, img_w, img_h);
+
+        cudaFree(d_in);
+        cudaFree(d_out);
     }
-    std::cout << "Loaded watermark image: " << wm_w << " x " << wm_h << "\n";
 
-    size_t image_size = img_w * img_h * sizeof(unsigned char);
-    size_t watermark_size = wm_w * wm_h * sizeof(unsigned char);
-
-    unsigned char *d_input, *d_watermark, *d_output;
-    CHECK_CUDA(cudaMalloc(&d_input, image_size));
-    CHECK_CUDA(cudaMalloc(&d_watermark, watermark_size));
-    CHECK_CUDA(cudaMalloc(&d_output, image_size));
-
-    CHECK_CUDA(cudaMemcpy(d_input, input_host.data(), image_size, cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_watermark, watermark_host.data(), watermark_size, cudaMemcpyHostToDevice));
-
-    dim3 threads(16, 16);
-    dim3 blocks((img_w + 15) / 16, (img_h + 15) / 16);
-
-    apply_watermark<<<blocks, threads>>>(d_input, d_watermark, d_output, img_w, img_h, wm_w, wm_h);
-    CHECK_CUDA(cudaDeviceSynchronize());
-
-    std::vector<unsigned char> output_host(img_w * img_h);
-    CHECK_CUDA(cudaMemcpy(output_host.data(), d_output, image_size, cudaMemcpyDeviceToHost));
-
-
-    savePGM("output/watermarked.pgm", output_host, img_w, img_h);
-    std::cout << "Watermark applied! Check output/watermarked.pgm\n";
-
-    cudaFree(d_input);
-    cudaFree(d_watermark);
-    cudaFree(d_output);
-
+    cudaFree(d_wm);
+    std::cout << "Done watermarking all images.\n";
     return 0;
 }
